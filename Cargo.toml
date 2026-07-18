@@ -17,3 +17,7 @@ octocrab = "0.54"
 reqwest = "0.13"
 semver = "1.0"
 sha2 = "0.11"
+
+[dev-dependencies]
+rustls = { version = "0.23", features = ["ring"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

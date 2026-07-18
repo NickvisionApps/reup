@@ -148,21 +148,147 @@ impl UpdateProvider for GitHubUpdater {
         &self,
         update_type: UpdateType,
     ) -> Result<Version, Box<dyn std::error::Error>> {
-        let octocrab = octocrab::instance();
-        let releases = octocrab
-            .repos(self.owner.clone(), self.repo.clone())
-            .releases()
-            .list()
-            .send()
-            .await?;
-        for release in releases.items {
+        let releases = self.get_all_releases().await?;
+        for release in releases {
             if release.prerelease && update_type == UpdateType::Stable {
                 continue;
             }
-            return Ok(Version::parse(
-                release.tag_name.to_lowercase().trim_start_matches('v'),
-            )?);
+            let tag = release.tag_name.to_lowercase();
+            let trimmed = tag.trim_start_matches('v');
+            let split_idx = trimmed.find(['-', '+']).unwrap_or(trimmed.len());
+            let (core, suffix) = trimmed.split_at(split_idx);
+            let normalized_core = core
+                .split('.')
+                .map(|segment| {
+                    if segment.chars().all(|c| c.is_ascii_digit()) {
+                        segment
+                            .parse::<u64>()
+                            .map(|n| n.to_string())
+                            .unwrap_or_else(|_| segment.to_string())
+                    } else {
+                        segment.to_string()
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(".");
+            return Ok(Version::parse(&format!("{normalized_core}{suffix}"))?);
         }
         Err("No suitable release found".into())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Once;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    const OWNER: &str = "yt-dlp";
+    const REPO: &str = "yt-dlp";
+    const RELEASE_TAG: &str = "2026.07.04";
+    const ASSET_WINDOWS: &str = "yt-dlp.exe";
+    const ASSET_LINUX: &str = "yt-dlp_linux";
+    const ASSET_MACOS: &str = "yt-dlp_macos";
+
+    #[cfg(target_os = "windows")]
+    const TARGET_ASSET: &str = ASSET_WINDOWS;
+    #[cfg(target_os = "linux")]
+    const TARGET_ASSET: &str = ASSET_LINUX;
+    #[cfg(target_os = "macos")]
+    const TARGET_ASSET: &str = ASSET_MACOS;
+
+    fn ensure_rustls_crypto_provider() {
+        static INIT: Once = Once::new();
+        INIT.call_once(|| {
+            let _ = rustls::crypto::ring::default_provider().install_default();
+        });
+    }
+
+    #[test]
+    fn builder_requires_owner() {
+        let result = GitHubUpdater::builder()
+            .repo(REPO)
+            .target_asset_name(ASSET_LINUX)
+            .build();
+        assert_eq!(result, Err(GitHubUpdaterBuilderError::MissingOwner));
+    }
+
+    #[test]
+    fn builder_requires_repo() {
+        let result = GitHubUpdater::builder()
+            .owner(OWNER)
+            .target_asset_name(ASSET_LINUX)
+            .build();
+        assert_eq!(result, Err(GitHubUpdaterBuilderError::MissingRepo));
+    }
+
+    #[test]
+    fn builder_requires_target_asset_name() {
+        let result = GitHubUpdater::builder().owner(OWNER).repo(REPO).build();
+        assert_eq!(
+            result,
+            Err(GitHubUpdaterBuilderError::MissingTargetAssetName)
+        );
+    }
+
+    #[test]
+    fn builder_creates_updater_with_all_required_fields() {
+        let result = GitHubUpdater::builder()
+            .owner(OWNER)
+            .repo(REPO)
+            .target_asset_name(ASSET_LINUX)
+            .build();
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn yt_dlp_releases_include_expected_tag_and_assets() {
+        ensure_rustls_crypto_provider();
+        let updater = GitHubUpdater::new(OWNER, REPO, TARGET_ASSET);
+        let releases = updater
+            .get_all_releases()
+            .await
+            .expect("must fetch releases from GitHub");
+        let release = releases
+            .iter()
+            .find(|release| release.tag_name == RELEASE_TAG)
+            .expect("expected yt-dlp release tag must exist");
+        let asset_names = release
+            .assets
+            .iter()
+            .map(|asset| asset.name.as_str())
+            .collect::<Vec<_>>();
+        assert!(asset_names.contains(&ASSET_WINDOWS));
+        assert!(asset_names.contains(&ASSET_LINUX));
+        assert!(asset_names.contains(&ASSET_MACOS));
+    }
+
+    #[tokio::test]
+    async fn latest_stable_yt_dlp_version_is_parseable() {
+        ensure_rustls_crypto_provider();
+        let updater = GitHubUpdater::new(OWNER, REPO, TARGET_ASSET);
+        let version = updater
+            .get_latest_version(UpdateType::Stable)
+            .await
+            .expect("latest stable release must be parseable");
+        assert!(version >= Version::new(2026, 7, 4));
+    }
+
+    #[tokio::test]
+    async fn download_update_downloads_current_platform_asset() {
+        ensure_rustls_crypto_provider();
+        let updater = GitHubUpdater::new(OWNER, REPO, TARGET_ASSET);
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after unix epoch")
+            .as_nanos();
+        let destination = std::env::temp_dir().join(format!("reup-test-{unique}-{TARGET_ASSET}"));
+        updater
+            .download_update(UpdateType::Stable, &destination)
+            .await
+            .expect("download should succeed");
+        let metadata = std::fs::metadata(&destination).expect("downloaded file should exist");
+        assert!(metadata.len() > 0, "downloaded file should not be empty");
+        let _ = std::fs::remove_file(destination);
     }
 }
