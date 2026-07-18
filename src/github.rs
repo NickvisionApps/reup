@@ -7,6 +7,8 @@ use semver::Version;
 use sha2::{Digest, Sha256};
 use std::{fs::File, path::Path};
 
+const RELEASE_CACHE_TTL_SECS: u64 = 6 * 60 * 60;
+
 /// Downloads update artifacts and versions from a GitHub repository's releases.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GitHubUpdater {
@@ -53,9 +55,9 @@ impl GitHubUpdater {
         GitHubUpdaterBuilder::default()
     }
 
-    /// Fetches all releases from the GitHub repository.
+    /// Fetches the latest release page from the GitHub repository.
     /// This method caches the releases in a local file for 6 hours to reduce API calls.
-    pub async fn get_all_releases(&self) -> Result<Vec<Release>, Box<dyn std::error::Error>> {
+    pub async fn get_latest_releases(&self) -> Result<Vec<Release>, Box<dyn std::error::Error>> {
         let cache_dir = BaseDirs::new()
             .ok_or("Failed to load base directories")?
             .cache_dir()
@@ -64,13 +66,18 @@ impl GitHubUpdater {
         std::fs::create_dir_all(&cache_dir)?;
         let cache_file = cache_dir.join(format!("{}_{}_releases.json", self.owner, self.repo));
         if std::fs::exists(&cache_file).is_ok_and(|x| x) {
-            let metdata = std::fs::metadata(&cache_file)?;
-            let last_write_time = metdata.modified()?;
-            if last_write_time.elapsed()?.as_secs() > 21600 {
-                std::fs::remove_file(&cache_file)?;
-            } else {
-                let releases: Vec<Release> = serde_json::from_reader(File::open(&cache_file)?)?;
-                return Ok(releases);
+            let metadata = std::fs::metadata(&cache_file)?;
+            let last_write_time = metadata.modified()?;
+            if last_write_time
+                .elapsed()
+                .is_ok_and(|elapsed| elapsed.as_secs() <= RELEASE_CACHE_TTL_SECS)
+            {
+                if let Ok(file) = File::open(&cache_file)
+                    && let Ok(releases) = serde_json::from_reader::<_, Vec<Release>>(file)
+                {
+                    return Ok(releases);
+                }
+                let _ = std::fs::remove_file(&cache_file);
             }
         }
         let octocrab = octocrab::instance();
@@ -80,7 +87,7 @@ impl GitHubUpdater {
             .list()
             .send()
             .await?;
-        std::fs::write(&cache_file, serde_json::to_string(&releases.items)?)?;
+        std::fs::write(&cache_file, serde_json::to_vec(&releases.items)?)?;
         Ok(releases.items)
     }
 }
@@ -126,7 +133,7 @@ impl UpdateProvider for GitHubUpdater {
         update_type: UpdateType,
         destination: &Path,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let releases = self.get_all_releases().await?;
+        let releases = self.get_latest_releases().await?;
         for release in releases {
             if release.prerelease && update_type == UpdateType::Stable {
                 continue;
@@ -168,7 +175,7 @@ impl UpdateProvider for GitHubUpdater {
         &self,
         update_type: UpdateType,
     ) -> Result<Version, Box<dyn std::error::Error>> {
-        let releases = self.get_all_releases().await?;
+        let releases = self.get_latest_releases().await?;
         for release in releases {
             if release.prerelease && update_type == UpdateType::Stable {
                 continue;
@@ -266,7 +273,7 @@ mod tests {
         ensure_rustls_crypto_provider();
         let updater = GitHubUpdater::new(OWNER, REPO, TARGET_ASSET);
         let releases = updater
-            .get_all_releases()
+            .get_latest_releases()
             .await
             .expect("must fetch releases from GitHub");
         let release = releases
