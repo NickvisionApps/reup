@@ -8,8 +8,7 @@ readme = "README.md"
 license = "MIT"
 description = "A cross-platform library for self updating desktop rust applications."
 repository = "https://github.com/NickvisionApps/reup"
-keywords = ["updates", "desktop"]
-categories = ["updates"]
+keywords = ["update", "desktop"]
 
 [dependencies]
 directories = "6.0"
