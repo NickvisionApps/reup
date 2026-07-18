@@ -1,6 +1,7 @@
 //! GitHub Releases-based [`UpdateProvider`](crate::UpdateProvider) implementation.
 
 use crate::{UpdateProvider, UpdateType};
+use directories::BaseDirs;
 use octocrab::models::repos::Release;
 use semver::Version;
 use sha2::{Digest, Sha256};
@@ -53,7 +54,25 @@ impl GitHubUpdater {
     }
 
     /// Fetches all releases from the GitHub repository.
+    /// This method caches the releases in a local file for 6 hours to reduce API calls.
     pub async fn get_all_releases(&self) -> Result<Vec<Release>, Box<dyn std::error::Error>> {
+        let cache_dir = BaseDirs::new()
+            .ok_or("Failed to load base directories")?
+            .cache_dir()
+            .join("reup")
+            .join("github");
+        std::fs::create_dir_all(&cache_dir)?;
+        let cache_file = cache_dir.join(format!("{}_{}_releases.json", self.owner, self.repo));
+        if std::fs::exists(&cache_file).is_ok_and(|x| x) {
+            let metdata = std::fs::metadata(&cache_file)?;
+            let last_write_time = metdata.modified()?;
+            if last_write_time.elapsed()?.as_secs() > 21600 {
+                std::fs::remove_file(&cache_file)?;
+            } else {
+                let releases: Vec<Release> = serde_json::from_reader(File::open(&cache_file)?)?;
+                return Ok(releases);
+            }
+        }
         let octocrab = octocrab::instance();
         let releases = octocrab
             .repos(self.owner.clone(), self.repo.clone())
@@ -61,6 +80,7 @@ impl GitHubUpdater {
             .list()
             .send()
             .await?;
+        std::fs::write(&cache_file, serde_json::to_string(&releases.items)?)?;
         Ok(releases.items)
     }
 }
@@ -289,6 +309,6 @@ mod tests {
             .expect("download should succeed");
         let metadata = std::fs::metadata(&destination).expect("downloaded file should exist");
         assert!(metadata.len() > 0, "downloaded file should not be empty");
-        let _ = std::fs::remove_file(destination);
+        let _ = std::fs::remove_file(&destination);
     }
 }
