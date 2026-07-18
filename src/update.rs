@@ -1,26 +1,96 @@
 //! Core update traits and type definitions used by provider implementations.
+//!
+//! Implement [`UpdateProvider`] to connect an update source to the common
+//! version lookup and artifact download API.
 
 use semver::Version;
 use std::path::Path;
 
 /// Selects which release channel should be queried for updates.
+///
+/// A provider should always include stable releases. [`Preview`] additionally
+/// permits prerelease releases.
+///
+/// [`Preview`]: Self::Preview
+///
+/// # Examples
+///
+/// ```
+/// use reup::UpdateType;
+///
+/// let stable = UpdateType::Stable;
+/// let preview = UpdateType::Preview;
+/// assert_ne!(stable, preview);
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UpdateType {
-    /// Only stable, non-prerelease versions.
+    /// Selects stable, non-prerelease releases.
     Stable,
-    /// Includes prerelease/preview versions.
+    /// Selects stable and prerelease/preview releases.
     Preview,
 }
 
 /// Defines the behavior required for downloading and resolving application updates.
+///
+/// Implementors choose how releases are discovered, how release tags are
+/// parsed, and how artifacts are verified. Methods return boxed errors so
+/// providers can expose errors from their network, filesystem, or parsing
+/// layers without imposing a provider-specific error type on callers.
+///
+/// # Examples
+///
+/// ```
+/// use reup::{UpdateProvider, UpdateType};
+/// use semver::Version;
+/// use std::path::Path;
+///
+/// struct LocalProvider;
+///
+/// impl UpdateProvider for LocalProvider {
+///     async fn download_update(
+///         &self,
+///         _update_type: UpdateType,
+///         destination: &Path,
+///     ) -> Result<(), Box<dyn std::error::Error>> {
+///         std::fs::write(destination, b"update")?;
+///         Ok(())
+///     }
+///
+///     async fn get_latest_version(
+///         &self,
+///         _update_type: UpdateType,
+///     ) -> Result<Version, Box<dyn std::error::Error>> {
+///         Ok(Version::new(1, 2, 3))
+///     }
+/// }
+/// ```
 pub trait UpdateProvider {
-    /// Downloads an update artifact for the selected release channel to `destination`.
+    /// Downloads an update artifact for the selected release channel.
+    ///
+    /// The provider creates or replaces the file at `destination`. A provider
+    /// should return an error when no suitable release or matching artifact is
+    /// available, or when downloading or verifying the artifact fails.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the provider cannot resolve or download a
+    /// suitable artifact, or cannot write it to `destination`.
     fn download_update(
         &self,
         update_type: UpdateType,
         destination: &Path,
     ) -> impl std::future::Future<Output = Result<(), Box<dyn std::error::Error>>> + Send;
-    /// Returns the latest available semantic version for the selected release channel.
+
+    /// Returns the latest available semantic version for the selected channel.
+    ///
+    /// The returned version is parsed from the provider's release metadata.
+    /// Providers should return an error when no suitable release exists or its
+    /// version cannot be parsed as a [`semver::Version`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when releases cannot be queried, no release matches
+    /// `update_type`, or the selected release has an invalid version.
     fn get_latest_version(
         &self,
         update_type: UpdateType,

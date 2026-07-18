@@ -1,15 +1,34 @@
 //! GitHub Releases-based [`UpdateProvider`](crate::UpdateProvider) implementation.
+//!
+//! Releases are read from the GitHub API and cached for six hours in the
+//! platform cache directory. Downloaded assets are verified against the
+//! SHA-256 digest reported by GitHub before the operation succeeds.
 
 use crate::{UpdateProvider, UpdateType};
 use directories::BaseDirs;
 use octocrab::models::repos::Release;
 use semver::Version;
 use sha2::{Digest, Sha256};
-use std::{fs::File, path::Path};
+use std::{
+    fmt::{Display, Formatter},
+    fs::File,
+    path::Path,
+};
 
 const RELEASE_CACHE_TTL_SECS: u64 = 6 * 60 * 60;
 
 /// Downloads update artifacts and versions from a GitHub repository's releases.
+///
+/// `target_asset_name` must exactly match the name of the release asset to
+/// download. The provider uses the first suitable release returned by GitHub.
+///
+/// # Examples
+///
+/// ```
+/// use reup::GitHubUpdater;
+///
+/// let updater = GitHubUpdater::new("example", "my-app", "my-app-linux");
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GitHubUpdater {
     owner: String,
@@ -18,6 +37,19 @@ pub struct GitHubUpdater {
 }
 
 /// Builder for constructing a [`GitHubUpdater`].
+///
+/// # Examples
+///
+/// ```
+/// use reup::GitHubUpdater;
+///
+/// let updater = GitHubUpdater::builder()
+///     .owner("example")
+///     .repo("my-app")
+///     .target_asset_name("my-app-linux")
+///     .build()
+///     .expect("all updater fields are set");
+/// ```
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct GitHubUpdaterBuilder {
     owner: Option<String>,
@@ -26,18 +58,46 @@ pub struct GitHubUpdaterBuilder {
 }
 
 /// Errors returned when required [`GitHubUpdaterBuilder`] fields are missing.
+///
+/// # Examples
+///
+/// ```
+/// use reup::{GitHubUpdater, GitHubUpdaterBuilderError};
+///
+/// let error = GitHubUpdater::builder()
+///     .repo("my-app")
+///     .target_asset_name("my-app-linux")
+///     .build()
+///     .expect_err("the owner is required");
+///
+/// assert_eq!(error, GitHubUpdaterBuilderError::MissingOwner);
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GitHubUpdaterBuilderError {
-    /// The repository owner was not provided.
+    /// The GitHub repository owner or organization was not provided.
     MissingOwner,
-    /// The repository name was not provided.
+    /// The GitHub repository name was not provided.
     MissingRepo,
-    /// The expected release asset filename was not provided.
+    /// The release asset filename to download was not provided.
     MissingTargetAssetName,
 }
 
 impl GitHubUpdater {
-    /// Creates a new updater for a repository and asset filename.
+    /// Creates an updater for a repository and release asset filename.
+    ///
+    /// `owner` and `repo` identify the GitHub repository. `target_asset_name`
+    /// must match the release asset that should be downloaded, including its
+    /// platform-specific suffix when applicable.
+    ///
+    /// This constructor only stores configuration; it does not contact GitHub.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use reup::GitHubUpdater;
+    ///
+    /// let updater = GitHubUpdater::new("example", "my-app", "my-app.exe");
+    /// ```
     pub fn new<O: Into<String>, R: Into<String>, T: Into<String>>(
         owner: O,
         repo: R,
@@ -50,13 +110,47 @@ impl GitHubUpdater {
         }
     }
 
-    /// Returns a builder for constructing a [`GitHubUpdater`].
+    /// Returns an empty builder for constructing a [`GitHubUpdater`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use reup::GitHubUpdater;
+    ///
+    /// let updater = GitHubUpdater::builder()
+    ///     .owner("example")
+    ///     .repo("my-app")
+    ///     .target_asset_name("my-app-linux")
+    ///     .build()
+    ///     .expect("all updater fields are set");
+    /// ```
     pub fn builder() -> GitHubUpdaterBuilder {
         GitHubUpdaterBuilder::default()
     }
 
-    /// Fetches the latest release page from the GitHub repository.
-    /// This method caches the releases in a local file for 6 hours to reduce API calls.
+    /// Fetches release metadata from the GitHub repository.
+    ///
+    /// Results are cached in the platform cache directory for six hours to
+    /// reduce GitHub API calls. A corrupt or expired cache is discarded before
+    /// fetching fresh metadata. The returned releases retain the order
+    /// provided by GitHub, which is normally newest first.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the platform cache directory cannot be resolved
+    /// or created, the cache cannot be read or written, the GitHub request
+    /// fails, or the response cannot be serialized.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # async fn run() -> Result<(), Box<dyn std::error::Error>> {
+    /// let updater = reup::GitHubUpdater::new("example", "my-app", "my-app-linux");
+    /// let releases = updater.get_latest_releases().await?;
+    /// println!("found {} releases", releases.len());
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn get_latest_releases(&self) -> Result<Vec<Release>, Box<dyn std::error::Error>> {
         let cache_dir = BaseDirs::new()
             .ok_or("Failed to load base directories")?
@@ -93,25 +187,50 @@ impl GitHubUpdater {
 }
 
 impl GitHubUpdaterBuilder {
-    /// Sets the repository owner (user or organization).
+    /// Sets the repository owner or organization.
+    ///
+    /// This field is required before calling [`Self::build`].
     pub fn owner<O: Into<String>>(mut self, owner: O) -> Self {
         self.owner = Some(owner.into());
         self
     }
 
     /// Sets the repository name.
+    ///
+    /// This field is required before calling [`Self::build`].
     pub fn repo<R: Into<String>>(mut self, repo: R) -> Self {
         self.repo = Some(repo.into());
         self
     }
 
-    /// Sets the expected release asset filename to download.
+    /// Sets the exact release asset filename to download.
+    ///
+    /// This field is required before calling [`Self::build`]. The name must
+    /// match the GitHub release asset exactly.
     pub fn target_asset_name<T: Into<String>>(mut self, target_asset_name: T) -> Self {
         self.target_asset_name = Some(target_asset_name.into());
         self
     }
 
     /// Builds a [`GitHubUpdater`] if all required fields are set.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first missing-field error in owner, repository, and asset
+    /// name order.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use reup::GitHubUpdater;
+    ///
+    /// let updater = GitHubUpdater::builder()
+    ///     .owner("example")
+    ///     .repo("my-app")
+    ///     .target_asset_name("my-app-linux")
+    ///     .build()?;
+    /// # Ok::<(), reup::GitHubUpdaterBuilderError>(())
+    /// ```
     pub fn build(self) -> Result<GitHubUpdater, GitHubUpdaterBuilderError> {
         let owner = self.owner.ok_or(GitHubUpdaterBuilderError::MissingOwner)?;
         let repo = self.repo.ok_or(GitHubUpdaterBuilderError::MissingRepo)?;
@@ -128,6 +247,19 @@ impl GitHubUpdaterBuilder {
 }
 
 impl UpdateProvider for GitHubUpdater {
+    /// Downloads the first matching release asset and verifies its SHA-256
+    /// digest against the digest reported by GitHub.
+    ///
+    /// Stable updates skip prerelease releases. Preview updates may use either
+    /// stable or prerelease releases. The file at `destination` is created or
+    /// replaced before the digest is checked.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if release metadata cannot be fetched, no suitable
+    /// release contains `target_asset_name`, the asset has no SHA-256 digest,
+    /// the download fails, the destination cannot be written, or the computed
+    /// digest does not match GitHub's digest.
     async fn download_update(
         &self,
         update_type: UpdateType,
@@ -171,6 +303,17 @@ impl UpdateProvider for GitHubUpdater {
         Err("No suitable release found".into())
     }
 
+    /// Returns the semantic version parsed from the first suitable GitHub
+    /// release tag.
+    ///
+    /// A leading `v` is ignored, and numeric version components are normalized
+    /// so tags such as `2026.07.04` can be parsed by `semver`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if release metadata cannot be fetched, no suitable
+    /// release exists, or the selected release tag is not a valid semantic
+    /// version.
     async fn get_latest_version(
         &self,
         update_type: UpdateType,
@@ -203,6 +346,18 @@ impl UpdateProvider for GitHubUpdater {
         Err("No suitable release found".into())
     }
 }
+
+impl Display for GitHubUpdaterBuilderError {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::MissingOwner => "GitHub repository owner was not provided",
+            Self::MissingRepo => "GitHub repository name was not provided",
+            Self::MissingTargetAssetName => "release asset filename was not provided",
+        })
+    }
+}
+
+impl std::error::Error for GitHubUpdaterBuilderError {}
 
 #[cfg(test)]
 mod tests {
