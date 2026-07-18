@@ -1,3 +1,4 @@
+/// Validates that the target OS is one of the supported platforms at build time.
 fn main() {
     let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
     if !["windows", "macos", "linux"].contains(&target_os.as_str()) {
