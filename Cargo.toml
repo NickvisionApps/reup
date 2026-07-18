@@ -1,0 +1,19 @@
+[package]
+name = "reup"
+version = "0.1.0"
+authors = ["Nick Logozzo <nlogozzo225@gmail.com>"]
+edition = "2024"
+build = "build.rs"
+readme = "README.md"
+license = "MIT"
+description = "A cross-platform library for self updating desktop rust applications."
+repository = "https://github.com/NickvisionApps/reup"
+keywords = ["update", "desktop"]
+categories = ["updates"]
+
+[dependencies]
+hex = "0.4"
+octocrab = "0.54"
+reqwest = "0.13"
+semver = "1.0"
+sha2 = "0.11"
