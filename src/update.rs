@@ -51,8 +51,10 @@ pub enum UpdateType {
 ///         &self,
 ///         _update_type: UpdateType,
 ///         destination: &Path,
+///         on_progress: impl Fn(u64, u64) + Send,
 ///     ) -> Result<(), Box<dyn std::error::Error>> {
 ///         std::fs::write(destination, b"update")?;
+///         on_progress(4, 4);
 ///         Ok(())
 ///     }
 ///
@@ -67,9 +69,11 @@ pub enum UpdateType {
 pub trait UpdateProvider {
     /// Downloads an update artifact for the selected release channel.
     ///
-    /// The provider creates or replaces the file at `destination`. A provider
-    /// should return an error when no suitable release or matching artifact is
-    /// available, or when downloading or verifying the artifact fails.
+    /// The provider creates or replaces the file at `destination`. `on_progress`
+    /// is called as bytes arrive with `(bytes_downloaded, total_bytes)`;
+    /// `total_bytes` is `0` when the size is unknown. A provider should return
+    /// an error when no suitable release or matching artifact is available, or
+    /// when downloading or verifying the artifact fails.
     ///
     /// # Errors
     ///
@@ -79,6 +83,7 @@ pub trait UpdateProvider {
         &self,
         update_type: UpdateType,
         destination: &Path,
+        on_progress: impl Fn(u64, u64) + Send,
     ) -> impl std::future::Future<Output = Result<(), Box<dyn std::error::Error>>> + Send;
 
     /// Returns the latest available semantic version for the selected channel.
@@ -109,7 +114,9 @@ mod tests {
             &self,
             _update_type: UpdateType,
             _destination: &Path,
+            on_progress: impl Fn(u64, u64) + Send,
         ) -> Result<(), Box<dyn std::error::Error>> {
+            on_progress(1, 1);
             Ok(())
         }
 
@@ -131,7 +138,7 @@ mod tests {
         let provider = MockProvider;
         let path = std::env::temp_dir().join("reup-update-provider-contract");
         provider
-            .download_update(UpdateType::Stable, &path)
+            .download_update(UpdateType::Stable, &path, |_, _| {})
             .await
             .expect("mock download_update should succeed");
         let version = provider

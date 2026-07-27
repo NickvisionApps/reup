@@ -6,12 +6,14 @@
 
 use crate::{UpdateProvider, UpdateType};
 use directories::BaseDirs;
+use futures_util::StreamExt;
 use octocrab::models::repos::Release;
 use semver::Version;
 use sha2::{Digest, Sha256};
 use std::{
     fmt::{Display, Formatter},
     fs::File,
+    io::Write,
     path::Path,
 };
 
@@ -244,7 +246,9 @@ impl UpdateProvider for GitHubUpdater {
     ///
     /// Stable updates skip prerelease releases. Preview updates may use either
     /// stable or prerelease releases. The file at `destination` is created or
-    /// replaced before the digest is checked.
+    /// replaced before the digest is checked. `on_progress` is called as bytes
+    /// arrive with `(bytes_downloaded, total_bytes)`; `total_bytes` is `0` if
+    /// the server does not report a content length.
     ///
     /// # Errors
     ///
@@ -256,6 +260,7 @@ impl UpdateProvider for GitHubUpdater {
         &self,
         update_type: UpdateType,
         destination: &Path,
+        on_progress: impl Fn(u64, u64) + Send,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let releases = self.get_latest_releases().await?;
         for release in releases {
@@ -266,22 +271,28 @@ impl UpdateProvider for GitHubUpdater {
                 if asset.name != self.target_asset_name {
                     continue;
                 }
-                let mut file = File::create(destination)?;
                 let expected_hash = asset
                     .digest
                     .ok_or("No digest found for asset")?
                     .to_lowercase()
                     .trim_start_matches("sha256:")
                     .to_string();
-                let bytes = reqwest::get(asset.browser_download_url.as_str())
+                let response = reqwest::get(asset.browser_download_url.as_str())
                     .await?
-                    .error_for_status()?
-                    .bytes()
-                    .await?
-                    .as_ref()
-                    .to_owned();
-                std::io::copy(&mut &bytes[..], &mut file)?;
-                let real_hash = hex::encode(Sha256::digest(&bytes));
+                    .error_for_status()?;
+                let total = response.content_length().unwrap_or(0);
+                let mut file = File::create(destination)?;
+                let mut hasher = Sha256::new();
+                let mut downloaded = 0u64;
+                let mut stream = response.bytes_stream();
+                while let Some(chunk) = stream.next().await {
+                    let chunk = chunk?;
+                    file.write_all(&chunk)?;
+                    hasher.update(&chunk);
+                    downloaded += chunk.len() as u64;
+                    on_progress(downloaded, total);
+                }
+                let real_hash = hex::encode(hasher.finalize());
                 if real_hash != expected_hash {
                     return Err(format!(
                         "Hash mismatch: expected {}, got {}",
@@ -457,10 +468,17 @@ mod tests {
             .expect("clock should be after unix epoch")
             .as_nanos();
         let destination = std::env::temp_dir().join(format!("reup-test-{unique}-{TARGET_ASSET}"));
+        let last_downloaded = std::sync::atomic::AtomicU64::new(0);
         updater
-            .download_update(UpdateType::Stable, &destination)
+            .download_update(UpdateType::Stable, &destination, |downloaded, _total| {
+                last_downloaded.store(downloaded, std::sync::atomic::Ordering::Relaxed);
+            })
             .await
             .expect("download should succeed");
+        assert!(
+            last_downloaded.load(std::sync::atomic::Ordering::Relaxed) > 0,
+            "progress callback should have fired"
+        );
         let metadata = std::fs::metadata(&destination).expect("downloaded file should exist");
         assert!(metadata.len() > 0, "downloaded file should not be empty");
         let _ = std::fs::remove_file(&destination);

@@ -22,7 +22,9 @@
 //!
 //! // Downloading is optional; the destination is created or replaced.
 //! updater
-//!     .download_update(UpdateType::Stable, Path::new("my-app.new"))
+//!     .download_update(UpdateType::Stable, Path::new("my-app.new"), |downloaded, total| {
+//!         println!("{downloaded}/{total} bytes downloaded");
+//!     })
 //!     .await?;
 //! # Ok(())
 //! # }
