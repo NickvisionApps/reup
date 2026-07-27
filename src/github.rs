@@ -128,30 +128,22 @@ impl GitHubUpdater {
         GitHubUpdaterBuilder::default()
     }
 
-    /// Fetches release metadata from the GitHub repository.
-    ///
-    /// Results are cached in the platform cache directory for six hours to
-    /// reduce GitHub API calls. A corrupt or expired cache is discarded before
-    /// fetching fresh metadata. The returned releases retain the order
-    /// provided by GitHub, which is normally newest first.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the platform cache directory cannot be resolved
-    /// or created, the cache cannot be read or written, the GitHub request
-    /// fails, or the response cannot be serialized.
-    ///
-    /// # Examples
-    ///
-    /// ```no_run
-    /// # async fn run() -> Result<(), Box<dyn std::error::Error>> {
-    /// let updater = reup::GitHubUpdater::new("example", "my-app", "my-app-linux");
-    /// let releases = updater.get_latest_releases().await?;
-    /// println!("found {} releases", releases.len());
-    /// # Ok(())
-    /// # }
-    /// ```
-    pub async fn get_latest_releases(&self) -> Result<Vec<Release>, Box<dyn std::error::Error>> {
+    /// Returns the configured repository owner or organization.
+    pub fn owner(&self) -> &str {
+        &self.owner
+    }
+
+    /// Returns the configured repository name.
+    pub fn repo(&self) -> &str {
+        &self.repo
+    }
+
+    /// Returns the configured release asset filename to download.
+    pub fn target_asset_name(&self) -> &str {
+        &self.target_asset_name
+    }
+
+    async fn get_latest_releases(&self) -> Result<Vec<Release>, Box<dyn std::error::Error>> {
         let cache_dir = BaseDirs::new()
             .ok_or("Failed to load base directories")?
             .cache_dir()
