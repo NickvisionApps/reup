@@ -22,7 +22,7 @@ use std::path::Path;
 /// let preview = UpdateType::Preview;
 /// assert_ne!(stable, preview);
 /// ```
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UpdateType {
     /// Selects stable, non-prerelease releases.
     Stable,

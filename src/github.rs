@@ -74,7 +74,7 @@ pub struct GitHubUpdaterBuilder {
 ///
 /// assert_eq!(error, GitHubUpdaterBuilderError::MissingOwner);
 /// ```
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GitHubUpdaterBuilderError {
     /// The GitHub repository owner or organization was not provided.
     MissingOwner,
