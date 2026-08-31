@@ -47,18 +47,18 @@ pub enum UpdateType {
 /// struct LocalProvider;
 ///
 /// impl UpdateProvider for LocalProvider {
-///     async fn download_update(
+///     fn download_update(
 ///         &self,
 ///         _update_type: UpdateType,
 ///         destination: &Path,
-///         on_progress: impl Fn(u64, u64) + Send,
+///         on_progress: impl Fn(u64, u64),
 ///     ) -> Result<(), Box<dyn std::error::Error>> {
 ///         std::fs::write(destination, b"update")?;
 ///         on_progress(4, 4);
 ///         Ok(())
 ///     }
 ///
-///     async fn get_latest_version(
+///     fn get_latest_version(
 ///         &self,
 ///         _update_type: UpdateType,
 ///     ) -> Result<Version, Box<dyn std::error::Error>> {
@@ -83,8 +83,8 @@ pub trait UpdateProvider {
         &self,
         update_type: UpdateType,
         destination: &Path,
-        on_progress: impl Fn(u64, u64) + Send,
-    ) -> impl std::future::Future<Output = Result<(), Box<dyn std::error::Error>>> + Send;
+        on_progress: impl Fn(u64, u64),
+    ) -> Result<(), Box<dyn std::error::Error>>;
 
     /// Returns the latest available semantic version for the selected channel.
     ///
@@ -99,7 +99,7 @@ pub trait UpdateProvider {
     fn get_latest_version(
         &self,
         update_type: UpdateType,
-    ) -> impl std::future::Future<Output = Result<Version, Box<dyn std::error::Error>>> + Send;
+    ) -> Result<Version, Box<dyn std::error::Error>>;
 }
 
 #[cfg(test)]
@@ -110,17 +110,17 @@ mod tests {
     struct MockProvider;
 
     impl UpdateProvider for MockProvider {
-        async fn download_update(
+        fn download_update(
             &self,
             _update_type: UpdateType,
             _destination: &Path,
-            on_progress: impl Fn(u64, u64) + Send,
+            on_progress: impl Fn(u64, u64),
         ) -> Result<(), Box<dyn std::error::Error>> {
             on_progress(1, 1);
             Ok(())
         }
 
-        async fn get_latest_version(
+        fn get_latest_version(
             &self,
             _update_type: UpdateType,
         ) -> Result<Version, Box<dyn std::error::Error>> {
@@ -133,17 +133,15 @@ mod tests {
         assert_ne!(UpdateType::Stable, UpdateType::Preview);
     }
 
-    #[tokio::test]
-    async fn update_provider_contract_can_be_implemented() {
+    #[test]
+    fn update_provider_contract_can_be_implemented() {
         let provider = MockProvider;
         let path = std::env::temp_dir().join("reup-update-provider-contract");
         provider
             .download_update(UpdateType::Stable, &path, |_, _| {})
-            .await
             .expect("mock download_update should succeed");
         let version = provider
             .get_latest_version(UpdateType::Preview)
-            .await
             .expect("mock get_latest_version should succeed");
         assert_eq!(version, Version::new(1, 2, 3));
     }
