@@ -170,7 +170,7 @@ impl GitHubUpdater {
         }
         let octocrab = octocrab::instance();
         let releases = octocrab
-            .repos(self.owner.clone(), self.repo.clone())
+            .repos(&self.owner, &self.repo)
             .releases()
             .list()
             .send()
