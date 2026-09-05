@@ -24,6 +24,7 @@
 //! updater
 //!     .download_update(UpdateType::Stable, Path::new("my-app.new"), |downloaded, total| {
 //!         println!("{downloaded}/{total} bytes downloaded");
+//!         std::ops::ControlFlow::Continue(())
 //!     })?;
 //! # Ok(())
 //! # }

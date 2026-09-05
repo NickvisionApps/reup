@@ -13,6 +13,7 @@ use std::{
     fmt::{Display, Formatter},
     fs::File,
     io::{Read, Write},
+    ops::ControlFlow,
     path::Path,
 };
 
@@ -250,19 +251,21 @@ impl UpdateProvider for GitHubUpdater {
     /// stable or prerelease releases. The file at `destination` is created or
     /// replaced before the digest is checked. `on_progress` is called as bytes
     /// arrive with `(bytes_downloaded, total_bytes)`; `total_bytes` is `0` if
-    /// the server does not report a content length.
+    /// the server does not report a content length. Returning
+    /// [`ControlFlow::Break`] from `on_progress` cancels the download; the
+    /// partial `destination` file is removed and an error is returned.
     ///
     /// # Errors
     ///
-    /// Returns an error if release metadata cannot be fetched, no suitable
-    /// release contains `target_asset_name`, the asset has no SHA-256 digest,
-    /// the download fails, the destination cannot be written, or the computed
-    /// digest does not match GitHub's digest.
+    /// Returns an error if the download is cancelled, release metadata cannot be
+    /// fetched, no suitable release contains `target_asset_name`, the asset has
+    /// no SHA-256 digest, the download fails, the destination cannot be written,
+    /// or the computed digest does not match GitHub's digest.
     fn download_update(
         &self,
         update_type: UpdateType,
         destination: &Path,
-        on_progress: impl Fn(u64, u64),
+        on_progress: impl Fn(u64, u64) -> ControlFlow<()>,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let releases = self.get_latest_releases()?;
         for release in releases {
@@ -294,7 +297,11 @@ impl UpdateProvider for GitHubUpdater {
                     file.write_all(&buffer[..n])?;
                     hasher.update(&buffer[..n]);
                     downloaded += n as u64;
-                    on_progress(downloaded, total);
+                    if on_progress(downloaded, total).is_break() {
+                        drop(file);
+                        std::fs::remove_file(destination)?;
+                        return Err("Download cancelled".into());
+                    }
                 }
                 let real_hash = hex::encode(hasher.finalize());
                 if real_hash != expected_hash {
@@ -474,6 +481,7 @@ mod tests {
         updater
             .download_update(UpdateType::Stable, &destination, |downloaded, _total| {
                 last_downloaded.store(downloaded, std::sync::atomic::Ordering::Relaxed);
+                std::ops::ControlFlow::Continue(())
             })
             .expect("download should succeed");
         assert!(

@@ -4,6 +4,7 @@
 //! version lookup and artifact download API.
 
 use semver::Version;
+use std::ops::ControlFlow;
 use std::path::Path;
 
 /// Selects which release channel should be queried for updates.
@@ -51,10 +52,12 @@ pub enum UpdateType {
 ///         &self,
 ///         _update_type: UpdateType,
 ///         destination: &Path,
-///         on_progress: impl Fn(u64, u64),
+///         on_progress: impl Fn(u64, u64) -> std::ops::ControlFlow<()>,
 ///     ) -> Result<(), Box<dyn std::error::Error>> {
 ///         std::fs::write(destination, b"update")?;
-///         on_progress(4, 4);
+///         if on_progress(4, 4).is_break() {
+///             return Err("cancelled".into());
+///         }
 ///         Ok(())
 ///     }
 ///
@@ -71,19 +74,22 @@ pub trait UpdateProvider {
     ///
     /// The provider creates or replaces the file at `destination`. `on_progress`
     /// is called as bytes arrive with `(bytes_downloaded, total_bytes)`;
-    /// `total_bytes` is `0` when the size is unknown. A provider should return
-    /// an error when no suitable release or matching artifact is available, or
-    /// when downloading or verifying the artifact fails.
+    /// `total_bytes` is `0` when the size is unknown. Returning
+    /// [`ControlFlow::Break`] from `on_progress` cancels the download; the
+    /// provider stops, discards the partial artifact, and returns an error. A
+    /// provider should also return an error when no suitable release or matching
+    /// artifact is available, or when downloading or verifying the artifact fails.
     ///
     /// # Errors
     ///
-    /// Returns an error when the provider cannot resolve or download a
-    /// suitable artifact, or cannot write it to `destination`.
+    /// Returns an error when the download is cancelled, when the provider cannot
+    /// resolve or download a suitable artifact, or cannot write it to
+    /// `destination`.
     fn download_update(
         &self,
         update_type: UpdateType,
         destination: &Path,
-        on_progress: impl Fn(u64, u64),
+        on_progress: impl Fn(u64, u64) -> ControlFlow<()>,
     ) -> Result<(), Box<dyn std::error::Error>>;
 
     /// Returns the latest available semantic version for the selected channel.
@@ -114,9 +120,11 @@ mod tests {
             &self,
             _update_type: UpdateType,
             _destination: &Path,
-            on_progress: impl Fn(u64, u64),
+            on_progress: impl Fn(u64, u64) -> ControlFlow<()>,
         ) -> Result<(), Box<dyn std::error::Error>> {
-            on_progress(1, 1);
+            if on_progress(1, 1).is_break() {
+                return Err("Download cancelled".into());
+            }
             Ok(())
         }
 
@@ -138,7 +146,7 @@ mod tests {
         let provider = MockProvider;
         let path = std::env::temp_dir().join("reup-update-provider-contract");
         provider
-            .download_update(UpdateType::Stable, &path, |_, _| {})
+            .download_update(UpdateType::Stable, &path, |_, _| ControlFlow::Continue(()))
             .expect("mock download_update should succeed");
         let version = provider
             .get_latest_version(UpdateType::Preview)
