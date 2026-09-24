@@ -10,14 +10,14 @@
 //! use reup::{GitHubUpdater, UpdateProvider, UpdateType};
 //! use std::path::Path;
 //!
-//! # fn run() -> Result<(), Box<dyn std::error::Error>> {
+//! # async fn run() -> Result<(), Box<dyn std::error::Error>> {
 //! let updater = GitHubUpdater::builder()
 //!     .owner("example")
 //!     .repo("my-app")
 //!     .target_asset_name("my-app-linux")
 //!     .build()?;
 //!
-//! let latest = updater.get_latest_version(UpdateType::Stable)?;
+//! let latest = updater.get_latest_version(UpdateType::Stable).await?;
 //! println!("latest stable version: {latest}");
 //!
 //! // Downloading is optional; the destination is created or replaced.
@@ -25,7 +25,8 @@
 //!     .download_update(UpdateType::Stable, Path::new("my-app.new"), |downloaded, total| {
 //!         println!("{downloaded}/{total} bytes downloaded");
 //!         std::ops::ControlFlow::Continue(())
-//!     })?;
+//!     })
+//!     .await?;
 //! # Ok(())
 //! # }
 //! ```

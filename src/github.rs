@@ -6,13 +6,14 @@
 
 use crate::{UpdateProvider, UpdateType};
 use directories::BaseDirs;
+use futures_util::StreamExt;
 use octocrab::models::repos::Release;
 use semver::Version;
 use sha2::{Digest, Sha256};
 use std::{
     fmt::{Display, Formatter},
     fs::File,
-    io::{Read, Write},
+    io::Write,
     ops::ControlFlow,
     path::Path,
 };
@@ -145,7 +146,7 @@ impl GitHubUpdater {
         &self.target_asset_name
     }
 
-    fn get_latest_releases(&self) -> Result<Vec<Release>, Box<dyn std::error::Error>> {
+    async fn get_latest_releases(&self) -> Result<Vec<Release>, Box<dyn std::error::Error>> {
         let cache_dir = BaseDirs::new()
             .ok_or("Failed to load base directories")?
             .cache_dir()
@@ -168,19 +169,14 @@ impl GitHubUpdater {
                 let _ = std::fs::remove_file(&cache_file);
             }
         }
-        let client = reqwest::blocking::Client::builder()
-            .user_agent(format!("{}-updater", self.repo))
-            .build()?;
-        let releases = client
-            .get(format!(
-                "https://api.github.com/repos/{}/{}/releases",
-                self.owner, self.repo
-            ))
-            .send()?
-            .error_for_status()?
-            .json::<Vec<Release>>()?;
-        std::fs::write(&cache_file, serde_json::to_vec(&releases)?)?;
-        Ok(releases)
+        let releases = octocrab::instance()
+            .repos(&self.owner, &self.repo)
+            .releases()
+            .list()
+            .send()
+            .await?;
+        std::fs::write(&cache_file, serde_json::to_vec(&releases.items)?)?;
+        Ok(releases.items)
     }
 }
 
@@ -261,13 +257,13 @@ impl UpdateProvider for GitHubUpdater {
     /// fetched, no suitable release contains `target_asset_name`, the asset has
     /// no SHA-256 digest, the download fails, the destination cannot be written,
     /// or the computed digest does not match GitHub's digest.
-    fn download_update(
+    async fn download_update(
         &self,
         update_type: UpdateType,
         destination: &Path,
-        on_progress: impl Fn(u64, u64) -> ControlFlow<()>,
+        on_progress: impl Fn(u64, u64) -> ControlFlow<()> + Send,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let releases = self.get_latest_releases()?;
+        let releases = self.get_latest_releases().await?;
         for release in releases {
             if release.prerelease && update_type == UpdateType::Stable {
                 continue;
@@ -282,21 +278,19 @@ impl UpdateProvider for GitHubUpdater {
                     .to_lowercase()
                     .trim_start_matches("sha256:")
                     .to_string();
-                let mut response = reqwest::blocking::get(asset.browser_download_url.as_str())?
+                let response = reqwest::get(asset.browser_download_url.as_str())
+                    .await?
                     .error_for_status()?;
                 let total = response.content_length().unwrap_or(0);
                 let mut file = File::create(destination)?;
                 let mut hasher = Sha256::new();
                 let mut downloaded = 0u64;
-                let mut buffer = [0u8; 8192];
-                loop {
-                    let n = response.read(&mut buffer)?;
-                    if n == 0 {
-                        break;
-                    }
-                    file.write_all(&buffer[..n])?;
-                    hasher.update(&buffer[..n]);
-                    downloaded += n as u64;
+                let mut stream = response.bytes_stream();
+                while let Some(chunk) = stream.next().await {
+                    let chunk = chunk?;
+                    file.write_all(&chunk)?;
+                    hasher.update(&chunk);
+                    downloaded += chunk.len() as u64;
                     if on_progress(downloaded, total).is_break() {
                         drop(file);
                         std::fs::remove_file(destination)?;
@@ -309,7 +303,7 @@ impl UpdateProvider for GitHubUpdater {
                         "Hash mismatch: expected {}, got {}",
                         expected_hash, real_hash
                     )
-                    .into());
+                        .into());
                 }
                 return Ok(());
             }
@@ -328,11 +322,11 @@ impl UpdateProvider for GitHubUpdater {
     /// Returns an error if release metadata cannot be fetched, no suitable
     /// release exists, or the selected release tag is not a valid semantic
     /// version.
-    fn get_latest_version(
+    async fn get_latest_version(
         &self,
         update_type: UpdateType,
     ) -> Result<Version, Box<dyn std::error::Error>> {
-        let releases = self.get_latest_releases()?;
+        let releases = self.get_latest_releases().await?;
         for release in releases {
             if release.prerelease && update_type == UpdateType::Stable {
                 continue;
@@ -437,12 +431,13 @@ mod tests {
         assert!(result.is_ok());
     }
 
-    #[test]
-    fn yt_dlp_releases_include_expected_tag_and_assets() {
+    #[tokio::test]
+    async fn yt_dlp_releases_include_expected_tag_and_assets() {
         ensure_rustls_crypto_provider();
         let updater = GitHubUpdater::new(OWNER, REPO, TARGET_ASSET);
         let releases = updater
             .get_latest_releases()
+            .await
             .expect("must fetch releases from GitHub");
         let release = releases
             .iter()
@@ -458,18 +453,19 @@ mod tests {
         assert!(asset_names.contains(&ASSET_MACOS));
     }
 
-    #[test]
-    fn latest_stable_yt_dlp_version_is_parseable() {
+    #[tokio::test]
+    async fn latest_stable_yt_dlp_version_is_parseable() {
         ensure_rustls_crypto_provider();
         let updater = GitHubUpdater::new(OWNER, REPO, TARGET_ASSET);
         let version = updater
             .get_latest_version(UpdateType::Stable)
+            .await
             .expect("latest stable release must be parseable");
         assert!(version >= Version::new(2026, 7, 4));
     }
 
-    #[test]
-    fn download_update_downloads_current_platform_asset() {
+    #[tokio::test]
+    async fn download_update_downloads_current_platform_asset() {
         ensure_rustls_crypto_provider();
         let updater = GitHubUpdater::new(OWNER, REPO, TARGET_ASSET);
         let unique = SystemTime::now()
@@ -483,6 +479,7 @@ mod tests {
                 last_downloaded.store(downloaded, std::sync::atomic::Ordering::Relaxed);
                 std::ops::ControlFlow::Continue(())
             })
+            .await
             .expect("download should succeed");
         assert!(
             last_downloaded.load(std::sync::atomic::Ordering::Relaxed) > 0,

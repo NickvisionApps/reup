@@ -48,11 +48,11 @@ pub enum UpdateType {
 /// struct LocalProvider;
 ///
 /// impl UpdateProvider for LocalProvider {
-///     fn download_update(
+///     async fn download_update(
 ///         &self,
 ///         _update_type: UpdateType,
 ///         destination: &Path,
-///         on_progress: impl Fn(u64, u64) -> std::ops::ControlFlow<()>,
+///         on_progress: impl Fn(u64, u64) -> std::ops::ControlFlow<()> + Send,
 ///     ) -> Result<(), Box<dyn std::error::Error>> {
 ///         std::fs::write(destination, b"update")?;
 ///         if on_progress(4, 4).is_break() {
@@ -61,7 +61,7 @@ pub enum UpdateType {
 ///         Ok(())
 ///     }
 ///
-///     fn get_latest_version(
+///     async fn get_latest_version(
 ///         &self,
 ///         _update_type: UpdateType,
 ///     ) -> Result<Version, Box<dyn std::error::Error>> {
@@ -89,8 +89,8 @@ pub trait UpdateProvider {
         &self,
         update_type: UpdateType,
         destination: &Path,
-        on_progress: impl Fn(u64, u64) -> ControlFlow<()>,
-    ) -> Result<(), Box<dyn std::error::Error>>;
+        on_progress: impl Fn(u64, u64) -> ControlFlow<()> + Send,
+    ) -> impl std::future::Future<Output = Result<(), Box<dyn std::error::Error>>> + Send;
 
     /// Returns the latest available semantic version for the selected channel.
     ///
@@ -105,7 +105,7 @@ pub trait UpdateProvider {
     fn get_latest_version(
         &self,
         update_type: UpdateType,
-    ) -> Result<Version, Box<dyn std::error::Error>>;
+    ) -> impl std::future::Future<Output = Result<Version, Box<dyn std::error::Error>>> + Send;
 }
 
 #[cfg(test)]
@@ -116,11 +116,11 @@ mod tests {
     struct MockProvider;
 
     impl UpdateProvider for MockProvider {
-        fn download_update(
+        async fn download_update(
             &self,
             _update_type: UpdateType,
             _destination: &Path,
-            on_progress: impl Fn(u64, u64) -> ControlFlow<()>,
+            on_progress: impl Fn(u64, u64) -> ControlFlow<()> + Send,
         ) -> Result<(), Box<dyn std::error::Error>> {
             if on_progress(1, 1).is_break() {
                 return Err("Download cancelled".into());
@@ -128,7 +128,7 @@ mod tests {
             Ok(())
         }
 
-        fn get_latest_version(
+        async fn get_latest_version(
             &self,
             _update_type: UpdateType,
         ) -> Result<Version, Box<dyn std::error::Error>> {
@@ -141,15 +141,17 @@ mod tests {
         assert_ne!(UpdateType::Stable, UpdateType::Preview);
     }
 
-    #[test]
-    fn update_provider_contract_can_be_implemented() {
+    #[tokio::test]
+    async fn update_provider_contract_can_be_implemented() {
         let provider = MockProvider;
         let path = std::env::temp_dir().join("reup-update-provider-contract");
         provider
             .download_update(UpdateType::Stable, &path, |_, _| ControlFlow::Continue(()))
+            .await
             .expect("mock download_update should succeed");
         let version = provider
             .get_latest_version(UpdateType::Preview)
+            .await
             .expect("mock get_latest_version should succeed");
         assert_eq!(version, Version::new(1, 2, 3));
     }
